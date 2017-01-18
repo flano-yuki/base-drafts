@@ -565,6 +565,7 @@ document.
 | 00000101 (0x05)  |  BLOCKED           | {{frame-blocked}}          |
 | 00000110 (0x06)  |  STOP_WAITING      | {{frame-stop-waiting}}     |
 | 00000111 (0x07)  |  PING              | {{frame-ping}}             |
+| 00001000 (0x08)  |  REQUEST_RST       | {{frame-request-rst}}      |
 +------------------|--------------------|----------------------------+
 
 ## Version Negotiation Packet
@@ -1185,10 +1186,11 @@ The BLOCKED frame contains a single field:
   control blocked.  When zero, the Stream ID field indicates that the connection
   is flow control blocked.
 
+
 ## RST_STREAM Frame {#frame-rst-stream}
 
-An endpoint may use a RST_STREAM frame (type=0x01) to abruptly terminate a
-stream.  The frame is as follows:
+An endpoint may use a RST_STREAM frame (type=0x01) to abruptly terminate
+transmission on a stream.  The frame is as follows:
 
 ~~~
  0                   1                   2                   3
@@ -1213,6 +1215,31 @@ The fields are:
 
 * Error code: A 32-bit error code which indicates why the stream is being
   closed.
+
+
+
+## REQUEST_RST Frame {#frame-request-rst}
+
+An endpoint may use a REQUEST_RST frame (type=0x08) to request a peer to
+abruptly terminate transmission on a stream.  The frame is as follows:
+
+~~~
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                        Stream ID (32)                         |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                        Error Code (32)                        |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+~~~
+
+The fields are:
+
+* Stream ID: The 32-bit Stream ID of the stream being terminated.
+
+* Error code: A 32-bit error code which indicates why the stream should be
+  closed.
+
 
 ## PADDING Frame {#frame-padding}
 
@@ -1402,24 +1429,23 @@ shown in the following figure and described below.
     ,---| reserved |------------.    | recv data
     |   |          |             \   |
     |   +----------+              v  v
-    |               recv FIN/   +--------+ send FIN/
-    |            app read_close |        | app write_close
+    |            send FIN/RST   +--------+ recv FIN/RST
+    |           app write_close |        | app read_close
     |                 ,---------|  open  |-----------.
     |                /          |        |            \
     |               v           +--------+             v
-    |        +----------+            |             +----------+
-    |        |   half   |            |             |   half   |
-    |        |  closed  |            | send RST/   |  closed  |
-    |        | (remote) |            | recv RST    | (local)  |
-    |        +----------+            |             +----------+
-    |            |                   |                    |
-    |            | send FIN/         |          recv FIN/ |
-    |            | app write_close/  |    app read_close/ |
-    |            | send RST/         v          send RST/ |
-    |            | recv RST     +--------+      recv RST  |
-    | send RST/  `------------->|        |<---------------'
-    | recv RST                  | closed |
-    `-------------------------->|        |
+    | send   +----------+                          +----------+
+    | RST    |   half   |                          |   half   |
+    `------->|  closed  |                          |  closed  |
+             | (local)  |                          | (remote) |
+             +----------+                          +----------+
+                 |                                        |
+                 | recv FIN/RST              send FIN/RST |
+                 | app read_close         app write_close |
+                 |              +--------+                |
+                 `------------->|        |<---------------'
+                                | closed |
+                                |        |
                                 +--------+
 
        send:   endpoint sends this frame
@@ -1482,23 +1508,30 @@ A stream in the "open" state may be used by both peers to send frames of any
 type.  In this state, a sending peer must observe the flow-control limit
 advertised by its receiving peer ({{flow-control}}).
 
-From this state, either endpoint can send a frame with the FIN flag set, which
-causes the stream to transition into one of the "half-closed" states.  An
-endpoint sending an FIN flag causes the stream state to become "half-closed
-(local)".  An endpoint receiving a FIN flag causes the stream state to become
-"half-closed (remote)"; the receiving endpoint MUST NOT process the FIN flag
-until all preceding data on the stream has been received.
+From this state, either endpoint can send a STREAM frame with the FIN flag set
+or a RST_STREAM frame.  These indicate the clean or abrupt termination of data
+flow on the stream, respectively.  In either case, this causes the stream to
+transition into one of the "half-closed" states.  An endpoint sending an FIN
+flag or a RST_STREAM frame causes the stream state to become "half-closed
+(local)".  An endpoint receiving a FIN flag or a RST_STREAM frame causes the
+stream state to become "half-closed (remote)".  The receiving endpoint MUST NOT
+process the FIN flag until all preceding data on the stream has been received,
+but MAY process a RST_STREAM frame immediately and discard any preceding data.
 
-Either endpoint can send a RST_STREAM frame from this state, causing it to
-transition immediately to "closed".
+Either endpoint can send a REQUEST_RST frame in this state to request closure of
+the stream in the opposite direction.  This typically indicates that the
+receiving application is no longer reading from the stream and all future data
+will be discarded upon receipt.  An endpoint SHOULD respond to a REQUEST_RST
+with a RST_STREAM of type QUIC_RECEIVED_RST.
 
 ### half-closed (local)
 
 A stream that is in the "half-closed (local)" state MUST NOT be used for sending
-STREAM frames; WINDOW_UPDATE and RST_STREAM MAY be sent in this state.
+STREAM frames; WINDOW_UPDATE, RST_STREAM, and REQUEST_RST MAY be sent in this
+state.
 
-A stream transitions from this state to "closed" when a frame that contains an
-FIN flag is received or when either peer sends a RST_STREAM frame.
+A stream transitions from this state to "closed" when a STREAM frame that
+contains an FIN flag or when a RST_STREAM frame is received.
 
 An endpoint can receive any type of frame in this state.  Providing flow-control
 credit using WINDOW_UPDATE frames is necessary to continue receiving
@@ -1506,13 +1539,27 @@ flow-controlled frames.  In this state, a receiver MAY ignore WINDOW_UPDATE
 frames for this stream, which might arrive for a short period after a frame
 bearing the FIN flag is sent.
 
+If an endpoint is no longer interested in the data being received in this state,
+it MAY send a REQUEST_RST frame to request that the peer close the stream.
+STREAM frames received after sending REQUEST_RST are still counted toward the
+connection and stream flow-control windows.  Even though these frames might be
+ignored, because they are sent before their sender receives the REQUEST_RST, the
+sender will consider the frames to count against its flow-control windows.
+
+If a REQUEST_RST frame is received on a stream that is already in the
+"half-closed (local)" state, a RST_STREAM frame SHOULD still be sent,
+so that no STREAM frames previously sent will be retransmitted.
+
 ### half-closed (remote)
 
 A stream that is "half-closed (remote)" is no longer being used by the peer to
 send any data.  In this state, a sender is no longer obligated to maintain a
 receiver stream-level flow-control window.
 
-If an endpoint receives any STREAM frames for a stream that is in this state, it
+Other frames on the stream might arrive after reaching this state, due to
+reordering or spurious retransmission.  If an endpoint receives any STREAM
+frames for a stream that is in this state, it MUST discard them.  If the STREAM
+frames are for an offset beyond the end of data transferred on the stream, it
 MUST close the connection with a QUIC_STREAM_DATA_AFTER_TERMINATION error
 ({{error-handling}}).
 
@@ -1520,39 +1567,23 @@ A stream in this state can be used by the endpoint to send frames of any type.
 In this state, the endpoint continues to observe advertised stream-level and
 connection-level flow-control limits ({{flow-control}}).
 
-A stream can transition from this state to "closed" by sending a frame that
-contains a FIN flag or when either peer sends a RST_STREAM frame.
+A stream can transition from this state to "closed" by sending a STREAM frame
+that contains a FIN flag or by sending a RST_STREAM frame.  Upon receipt of a
+REQUEST_RST frame, a RST_STREAM frame SHOULD be sent in response.
 
 ### closed
 
 The "closed" state is the terminal state.
 
-A final offset is present in both a frame bearing a FIN flag and in a RST_STREAM
-frame.  Upon sending either of these frames for a stream, the endpoint MUST NOT
-send a STREAM frame carrying data beyond the final offset.
+A final offset is present in both a STREAM frame bearing a FIN flag and in a
+RST_STREAM frame.  Upon sending either of these frames for a stream, the
+endpoint MUST NOT send a STREAM frame carrying data beyond the final offset.
 
 An endpoint that receives any frame for this stream after receiving either a FIN
 flag and all stream data preceding it, or a RST_STREAM frame, MUST quietly
 discard the frame, with one exception.  If a STREAM frame carrying data beyond
 the received final offset is received, the endpoint MUST close the connection
 with a QUIC_STREAM_DATA_AFTER_TERMINATION error ({{error-handling}}).
-
-An endpoint that receives a RST_STREAM frame (and which has not sent a FIN or a
-RST_STREAM) MUST immediately respond with a RST_STREAM frame, and MUST NOT send
-any more data on the stream.  This endpoint may continue receiving frames for
-the stream on which a RST_STREAM is received.
-
-If this state is reached as a result of sending a RST_STREAM frame, the peer
-that receives the RST_STREAM might have already sent -- or enqueued for sending
--- frames on the stream that cannot be withdrawn.  An endpoint MUST ignore
-frames that it receives on closed streams after it has sent a RST_STREAM frame.
-An endpoint MAY choose to limit the period over which it ignores frames and
-treat frames that arrive after this time as being in error.
-
-STREAM frames received after sending RST_STREAM are counted toward the
-connection and stream flow-control windows.  Even though these frames might be
-ignored, because they are sent before their sender receives the RST_STREAM, the
-sender will consider the frames to count against its flow-control windows.
 
 In the absence of more specific guidance elsewhere in this document,
 implementations SHOULD treat the receipt of a frame that is not expressly
@@ -1691,13 +1722,13 @@ waiting for a WINDOW_UPDATE which will never come.
 ### Mid-stream RST_STREAM
 
 On receipt of an RST_STREAM frame, an endpoint will tear down state for the
-matching stream and ignore further data arriving on that stream.  This could
-result in the endpoints getting out of sync, since the RST_STREAM frame may have
-arrived out of order and there may be further bytes in flight.  The data sender
-would have counted the data against its connection level flow control budget,
-but a receiver that has not received these bytes would not know to include them
-as well.  The receiver must learn of the number of bytes that were sent on the
-stream to make the same adjustment in its connection flow controller.
+ignore further data arriving on that stream.  This could result in the endpoints
+getting out of sync, since the RST_STREAM frame may have arrived out of order
+and there may be further bytes in flight.  The data sender would have counted
+the data against its connection level flow control budget, but a receiver that
+has not received these bytes would not know to include them as well.  The
+receiver must learn of the number of bytes that were sent on the stream to make
+the same adjustment in its connection flow controller.
 
 To avoid this de-synchronization, a RST_STREAM sender MUST include the final
 byte offset sent on the stream in the RST_STREAM frame.  On receiving a
@@ -1709,10 +1740,12 @@ controller.
 ### Response to a RST_STREAM
 
 Since streams are bidirectional, a sender of a RST_STREAM needs to know how many
-bytes the peer has sent on the stream.  If an endpoint receives a RST_STREAM
-frame and has sent neither a FIN nor a RST_STREAM, it MUST send a RST_STREAM in
-response, bearing the offset of the last byte sent on this stream as the final
-offset.
+bytes the peer has sent on the stream.   An endpoint that receives a RST_STREAM
+frame (and which has not sent a FIN or a RST_STREAM) MUST immediately respond
+with a RST_STREAM frame bearing the offset of the last byte sent on this stream
+as the final offset, and MUST NOT send any more data on the stream.  This
+RST_STREAM SHOULD contain the error code QUIC_RECEIVED_RST.
+
 
 ### Offset Increment
 
@@ -1777,6 +1810,9 @@ QUIC_INVALID_PACKET_HEADER (0x8003):
 
 QUIC_INVALID_FRAME_DATA (0x8004):
 : Frame data is malformed.
+
+QUIC_RECEIVED_RST (0x8005):
+: Terminating stream because peer sent a RST_STREAM or REQUEST_RST.
 
 QUIC_MISSING_PAYLOAD (0x8030):
 : The packet contained no payload.
