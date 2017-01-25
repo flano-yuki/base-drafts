@@ -666,12 +666,12 @@ be revalidated once the cryptographic handshake has completed (see
 ## Crypto and Transport Handshake {#handshake}
 
 QUIC relies on a combined crypto and transport handshake to minimize connection
-establishment latency.  QUIC provides a dedicated stream (Stream ID 1) to be
-used for performing a combined connection and security handshake (streams are
-described in detail in {{streams}}).  The crypto handshake protocol encapsulates
-and delivers QUIC's transport handshake to the peer on the crypto stream.  The
-first QUIC packet sent by client to the server MUST carry handshake information
-as data on Stream ID 1.
+establishment latency.  QUIC provides a dedicated stream pair (Stream ID 1 in
+each direction) to be used for performing a combined connection and security
+handshake (streams are described in detail in {{streams}}).  The crypto
+handshake protocol encapsulates and delivers QUIC's transport handshake to the
+peer on the crypto streams.  The first QUIC packet from the client to the server
+MUST carry handshake information as data on the client's Stream ID 1.
 
 ### Transport Parameters and Options
 
@@ -824,12 +824,12 @@ of three ways:
    the peer prior to a CONNECTION_CLOSE to indicate that the connection will
    soon be terminated.  A GOAWAY frame signals to the peer that any active
    streams will continue to be processed, but the sender of the GOAWAY will not
-   initiate any additional streams and will not accept any new incoming streams.
-   On termination of the active streams, a CONNECTION_CLOSE may be sent.  If an
-   endpoint sends a CONNECTION_CLOSE frame while unterminated streams are active
-   (no FIN bit or RST_STREAM frames have been sent or received for one or more
-   streams), then the peer must assume that the streams were incomplete and were
-   abnormally terminated.
+   initiate any additional streams and might not accept any new incoming
+   streams. On termination of the active streams, a CONNECTION_CLOSE may be
+   sent. If an endpoint sends a CONNECTION_CLOSE frame while unterminated
+   streams are active (no FIN bit or RST_STREAM frames have been sent or
+   received for one or more streams), then the peer must assume that the streams
+   were incomplete and were abnormally terminated.
 
 2. Implicit Shutdown: The default idle timeout for a QUIC connection is 30
    seconds, and is a required parameter (ICSL) in connection negotiation.  The
@@ -860,7 +860,15 @@ We now describe the various QUIC frame types that can be present in a Regular
 packet. The use of these frames and various frame header bits are described in
 subsequent sections.
 
-## STREAM Frame {#frame-stream}
+Some frames carry information about the sender's own streams; other frames carry
+feedback to a peer about the peer's streams.  Finally, some frames carry
+connection-level information only.
+
+Unknown frame types MUST be ignored.
+
+## Sender Frames {#frames-sender}
+
+### STREAM Frame {#frame-stream}
 
 STREAM frames implicitly create a stream and carry stream data. The type byte
 for a STREAM frame contains embedded flags, and is formatted as `1FDOOOSS`.
@@ -929,7 +937,119 @@ blocks all those streams from making progress.  An implementation is therefore
 advised to bundle as few streams as necessary in outgoing packets without losing
 transmission efficiency to underfilled packets.
 
-## ACK Frame {#frame-ack}
+### BLOCKED Frame {#frame-blocked}
+
+A sender sends a BLOCKED frame (type=0x05) when it is ready to send data (and
+has data to send), but is currently flow control blocked. BLOCKED frames are
+purely informational frames, but extremely useful for debugging purposes. A
+receiver of a BLOCKED frame should simply discard it (after possibly printing a
+helpful log message). The frame is as follows:
+
+~~~
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                        Stream ID (32)                         |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+~~~
+
+The BLOCKED frame contains a single field:
+
+* Stream ID: A 32-bit unsigned number indicating the stream which is flow
+  control blocked.  A non-zero Stream ID field specifies the stream that is flow
+  control blocked.  When zero, the Stream ID field indicates that the connection
+  is flow control blocked.
+
+
+### RST_STREAM Frame {#frame-rst-stream}
+
+An endpoint may use a RST_STREAM frame (type=0x01) to abruptly terminate
+a stream.  The frame is as follows:
+
+~~~
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                        Stream ID (32)                         |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                                                               |
++                        Byte Offset (64)                       +
+|                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                        Error Code (32)                        |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+~~~
+
+The fields are:
+
+* Stream ID: The 32-bit Stream ID of the stream being terminated.
+
+* Byte offset: A 64-bit unsigned integer indicating the absolute byte offset of
+  the end of data written on this stream by the RST_STREAM sender.
+
+* Error code: A 32-bit error code which indicates why the stream is being
+  closed.
+
+
+## Receiver Frames {#frames-receiver}
+
+These frames can be sent by the receiver of a stream in any stream state.
+
+### WINDOW_UPDATE Frame {#frame-window-update}
+
+The WINDOW_UPDATE frame (type=0x04) informs the peer of an increase in an
+endpoint's flow control receive window. The Stream ID can be zero, indicating
+this WINDOW_UPDATE applies to the connection level flow control window, or
+non-zero, indicating that the peer's specified stream should increase its flow
+control window. The frame is as follows:
+
+~~~
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                        Stream ID (32)                         |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                                                               |
++                        Byte Offset (64)                       +
+|                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+~~~
+
+The fields in the WINDOW_UPDATE frame are as follows:
+
+* Stream ID: ID of the stream whose flow control windows is being updated, or 0
+  to specify the connection-level flow control window.
+
+* Byte offset: A 64-bit unsigned integer indicating the absolute byte offset of
+  data which can be sent on the given stream.  In the case of connection level
+  flow control, the cumulative number of bytes which can be sent on all
+  currently open streams.
+
+## REQUEST_RST Frame {#frame-request-rst}
+
+An endpoint may use a REQUEST_RST frame (type=0x08) to request a peer to
+abruptly terminate a stream.  The frame is as follows:
+
+~~~
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                        Stream ID (32)                         |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                        Error Code (32)                        |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+~~~
+
+The fields are:
+
+* Stream ID: The 32-bit Stream ID of the stream to be terminated.
+
+* Error code: A 32-bit error code which indicates why the stream should be
+  closed.
+
+## Connection Frames {#frames-connection}
+
+### ACK Frame {#frame-ack}
 
 Receivers send ACK frames to inform senders which packets they have received, as
 well as which packets are considered missing.  The ACK frame contains between 1
@@ -1011,7 +1131,7 @@ The fields in the ACK frame are as follows:
   received packets.  See {{timestamp-section}}.
 
 
-### Ack Block Section {#ack-block-section}
+#### Ack Block Section {#ack-block-section}
 
 The Ack Block Section contains between one and 256 blocks of packet numbers
 which have been successfully received. If the Num Blocks field is absent, only
@@ -1051,7 +1171,7 @@ The fields in the Ack Block Section are:
   end of the previous gap.  Along with the previous field, this field is
   repeated "Num Blocks" times.
 
-### Timestamp Section {#timestamp-section}
+#### Timestamp Section {#timestamp-section}
 
 The Timestamp Section contains between zero and 255 measurements of packet
 receive times relative to the beginning of the connection.
@@ -1093,7 +1213,7 @@ The fields in the Timestamp Section are:
   encoded in the same format as the Ack Delay.  Along with the previous field,
   this field is repeated "Num Timestamps" times.
 
-#### Time Format
+##### Time Format
 
 DISCUSS_AND_REPLACE: Perhaps make this format simpler.
 
@@ -1110,7 +1230,7 @@ actual exponent is one-less than the explicit exponent, and the value represents
 4096 microseconds.  Any values larger than the representable range are clamped
 to 0xFFFF.
 
-## STOP_WAITING Frame {#frame-stop-waiting}
+### STOP_WAITING Frame {#frame-stop-waiting}
 
 The STOP_WAITING frame (type=0x06) is sent to inform the peer that it should not
 continue to wait for packets with packet numbers lower than a specified value.
@@ -1137,114 +1257,6 @@ The STOP_WAITING frame contains a single field:
   packets earlier than this packet, the receiver SHOULD consider those packets
   to be irrecoverably lost and MUST NOT report those packets as missing in
   subsequent acks.
-
-## WINDOW_UPDATE Frame {#frame-window-update}
-
-The WINDOW_UPDATE frame (type=0x04) informs the peer of an increase in an
-endpoint's flow control receive window. The Stream ID can be zero, indicating
-this WINDOW_UPDATE applies to the connection level flow control window, or
-non-zero, indicating that the specified stream should increase its flow control
-window. The frame is as follows:
-
-~~~
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                        Stream ID (32)                         |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-+                        Byte Offset (64)                       +
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-~~~
-
-The fields in the WINDOW_UPDATE frame are as follows:
-
-* Stream ID: ID of the stream whose flow control windows is being updated, or 0
-  to specify the connection-level flow control window.
-
-* Byte offset: A 64-bit unsigned integer indicating the absolute byte offset of
-  data which can be sent on the given stream.  In the case of connection level
-  flow control, the cumulative number of bytes which can be sent on all
-  currently open streams.
-
-## BLOCKED Frame {#frame-blocked}
-
-A sender sends a BLOCKED frame (type=0x05) when it is ready to send data (and
-has data to send), but is currently flow control blocked. BLOCKED frames are
-purely informational frames, but extremely useful for debugging purposes. A
-receiver of a BLOCKED frame should simply discard it (after possibly printing a
-helpful log message). The frame is as follows:
-
-~~~
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                        Stream ID (32)                         |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-~~~
-
-The BLOCKED frame contains a single field:
-
-* Stream ID: A 32-bit unsigned number indicating the stream which is flow
-  control blocked.  A non-zero Stream ID field specifies the stream that is flow
-  control blocked.  When zero, the Stream ID field indicates that the connection
-  is flow control blocked.
-
-
-## RST_STREAM Frame {#frame-rst-stream}
-
-An endpoint may use a RST_STREAM frame (type=0x01) to abruptly terminate
-transmission on a stream.  The frame is as follows:
-
-~~~
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                        Stream ID (32)                         |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                                                               |
-+                        Byte Offset (64)                       +
-|                                                               |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                        Error Code (32)                        |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-~~~
-
-The fields are:
-
-* Stream ID: The 32-bit Stream ID of the stream being terminated.
-
-* Byte offset: A 64-bit unsigned integer indicating the absolute byte offset of
-  the end of data written on this stream by the RST_STREAM sender.
-
-* Error code: A 32-bit error code which indicates why the stream is being
-  closed.
-
-
-
-## REQUEST_RST Frame {#frame-request-rst}
-
-An endpoint may use a REQUEST_RST frame (type=0x08) to request a peer to
-abruptly terminate transmission on a stream.  The frame is as follows:
-
-~~~
- 0                   1                   2                   3
- 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                        Stream ID (32)                         |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-|                        Error Code (32)                        |
-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-~~~
-
-The fields are:
-
-* Stream ID: The 32-bit Stream ID of the stream being terminated.
-
-* Error code: A 32-bit error code which indicates why the stream should be
-  closed.
-
 
 ## PADDING Frame {#frame-padding}
 
@@ -1299,7 +1311,7 @@ The fields of a CONNECTION_CLOSE frame are as follows:
 An endpoint may use a GOAWAY frame (type=0x03) to notify its peer that the
 connection should stop being used, and will likely be closed in the future. The
 endpoints will continue using any active streams, but the sender of the GOAWAY
-will not initiate any additional streams, and will not accept any new streams.
+will not initiate any additional streams, and might not accept any new streams.
 The frame is as follows:
 
 ~~~
@@ -1323,7 +1335,7 @@ The fields of a GOAWAY frame are as follows:
   this connection.
 
 * Last Good Stream ID: The last Stream ID which was accepted by the sender of
-  the GOAWAY message.  If no streams were replied to, this value must be set to
+  the GOAWAY message.  If no streams were processed, this value MUST be set to
   0.
 
 * Reason Phrase Length: A 16-bit unsigned number specifying the length of the
@@ -1332,6 +1344,7 @@ The fields of a GOAWAY frame are as follows:
 
 * Reason Phrase: An optional human-readable explanation for why the connection
   was closed.
+
 
 # Packetization and Reliability {#packetization}
 
@@ -1396,19 +1409,23 @@ discussed in more detail in {{QUIC-RECOVERY}}.
 
 # Streams: QUIC's Data Structuring Abstraction {#streams}
 
-Streams in QUIC provide a lightweight, ordered, and bidirectional byte-stream
-abstraction.  Streams can be created either by the client or the server, can
-concurrently send data interleaved with other streams, and can be cancelled.
-QUIC's stream lifetime is modeled closely after HTTP/2's {{?RFC7540}}.  Streams
-are independent of each other in delivery order.  That is, data that is received
-on a stream is delivered in order within that stream, but there is no particular
-delivery order across streams.  Transmit ordering among streams is left to the
-implementation.  QUIC streams are considered lightweight in that the creation
-and destruction of streams are expected to have minimal bandwidth and
-computational cost.  A single STREAM frame may create, carry data for, and
-terminate a stream, or a stream may last the entire duration of a connection.
-Implementations are therefore advised to keep these extremes in mind and to
-implement stream creation and destruction to be as lightweight as possible.
+Streams in QUIC provide a lightweight ordered byte-stream abstraction.  Each
+stream transfers data from the sender to the receiver, and streams with the same
+ID in opposite directions might or might not be related based on the application
+using QUIC.
+
+Streams can be created unilaterally, can concurrently send data interleaved with
+other streams, and can be cancelled. QUIC's stream lifetime is modeled closely
+after HTTP/2's {{!RFC7540}}.  Streams are independent of each other in delivery
+order.  That is, data that is received on a stream is delivered in order within
+that stream, but there is no particular delivery order across streams.  Transmit
+ordering among streams is left to the implementation.  QUIC streams are
+considered lightweight in that the creation and destruction of streams are
+expected to have minimal bandwidth and computational cost.  A single STREAM
+frame may create, carry data for, and terminate a stream, or a stream may last
+the entire duration of a connection. Implementations are therefore advised to
+keep these extremes in mind and to implement stream creation and destruction to
+be as lightweight as possible.
 
 An alternative view of QUIC streams is as an elastic "message" abstraction,
 similar to the way ephemeral streams are used in SST {{SST}}, which may be a
@@ -1416,54 +1433,32 @@ more appealing description for some applications.
 
 ## Life of a Stream
 
-The semantics of QUIC streams is based on HTTP/2 streams, and the lifecycle of a
-QUIC stream therefore closely follows that of an HTTP/2 stream {{?RFC7540}},
-with some differences to accommodate the possibility of out-of-order delivery
-due to the use of multiple streams in QUIC.  The lifecycle of a QUIC stream is
-shown in the following figure and described below.
+Each stream begins in the "idle" state, becomes "open" once data is transferred,
+and is "closed" when no more data will be sent.  The lifecycle of a QUIC stream
+is shown in the following figure and described below.
 
 ~~~
-                        app     +--------+
-                 reserve_stream |        |
-                 ,--------------|  idle  |
-                /               |        |
-               /                +--------+
-              V                      |
-        +----------+ send data/      |
-        |          | recv data       | send data/
-    ,---| reserved |------------.    | recv data
-    |   |          |             \   |
-    |   +----------+              v  v
-    |            send FIN/RST   +--------+ recv FIN/RST
-    |           app write_close |        | app read_close
-    |                 ,---------|  open  |-----------.
-    |                /          |        |            \
-    |               v           +--------+             v
-    | send   +----------+                          +----------+
-    | RST    |   half   |                          |   half   |
-    `------->|  closed  |                          |  closed  |
-             | (local)  |                          | (remote) |
-             +----------+                          +----------+
-                 |                                        |
-                 | recv FIN/RST              send FIN/RST |
-                 | app read_close         app write_close |
-                 |              +--------+                |
-                 `------------->|        |<---------------'
-                                | closed |
-                                |        |
-                                +--------+
-
-       send:   endpoint sends this frame
-       recv:   endpoint receives this frame
-
+    +--------+
+    |        | send data
+    |  idle  |------------.
+    |        |             \
+    +--------+              v
+        |              +--------+
+        |              |        |
+        | send         |  open  |
+        | RST          |        |
+        |              +--------+
+        |                   |
+        |      send FIN/RST |
+        |                   v
+        |              +--------+
+         \             |        |
+          `----------->| closed |
+                       |        |
+                       +--------+
        data: application data in a STREAM frame
        FIN: FIN flag in a STREAM frame
        RST: RST_STREAM frame
-
-       app: application API signals to QUIC
-       reserve_stream: causes a StreamID to be reserved for later use
-       read_close: causes stream to be half-closed without receiving a FIN
-       write_close: causes stream to be half-closed without sending a FIN
 ~~~
 {: #stream-lifecycle title="Lifecycle of a stream"}
 
@@ -1474,11 +1469,9 @@ frame with the FIN flag set can cause two state transitions.  When the FIN bit
 is sent on an empty STREAM frame, the offset in the STREAM frame MUST be one
 greater than the last data byte sent on this stream.
 
-Both endpoints have a subjective view of the state of a stream that could be
-different when frames are in transit.  Endpoints do not coordinate the creation
-of streams; they are created unilaterally by either endpoint.  The negative
-consequences of a mismatch in states are limited to the "closed" state after
-sending RST_STREAM, where frames might be received for some time after closing.
+Endpoints do not coordinate changes in stream state; they are created and closed
+unilaterally by each endpoint.  The receiver of a stream will have a delayed
+view of the state of a stream when frames are in transit.
 
 Streams have the following states:
 
@@ -1488,132 +1481,53 @@ All streams start in the "idle" state.
 
 The following transitions are valid from this state:
 
-Sending or receiving a STREAM frame causes the stream to become "open".  The
-stream identifier is selected as described in {{stream-identifiers}}.  The same
-STREAM frame can also cause a stream to immediately become "half-closed".
+- Sending a STREAM frame causes the stream to become "open".  The stream
+  identifier is selected as described in {{stream-identifiers}}.  The same
+  STREAM frame can also cause a stream to immediately become "closed".
 
-An application can reserve an idle stream for later use.  The stream state for
-the reserved stream transitions to "reserved".
-
-Receiving any frame other than STREAM or RST_STREAM on a stream in this state
-MUST be treated as a connection error ({{error-handling}}) of type YYYY.
-
-### reserved
-
-A stream in this state has been reserved for later use by the application.  In
-this state only the following transitions are possible:
-
-* Sending or receiving a STREAM frame causes the stream to become "open".
-
-* Sending or receiving a RST_STREAM frame causes the stream to become "closed".
+- Sending a RST_STREAM frame causes the stream to become "closed".
 
 ### open
 
-A stream in the "open" state may be used by both peers to send frames of any
-type.  In this state, a sending peer must observe the flow-control limit
-advertised by its receiving peer ({{flow-control}}).
+A stream in the "open" state may be used to transfer data.  In this
+state, a sending peer must observe the flow-control limit advertised by its
+receiving peer ({{flow-control}}).
 
-From this state, either endpoint can send a STREAM frame with the FIN flag set
-or a RST_STREAM frame.  These indicate the clean or abrupt termination of data
-flow on the stream, respectively.  In either case, this causes the stream to
-transition into one of the "half-closed" states.  An endpoint sending an FIN
-flag or a RST_STREAM frame causes the stream state to become "half-closed
-(local)".  An endpoint receiving a FIN flag or a RST_STREAM frame causes the
-stream state to become "half-closed (remote)".  The receiving endpoint MUST NOT
-process the FIN flag until all preceding data on the stream has been received,
-but MAY process a RST_STREAM frame immediately and discard any preceding data.
-
-Either endpoint can send a REQUEST_RST frame in this state to request closure of
-the stream in the opposite direction.  This typically indicates that the
-receiving application is no longer reading from the stream and all future data
-will be discarded upon receipt.  An endpoint SHOULD respond to a REQUEST_RST
-with a RST_STREAM of type QUIC_RECEIVED_RST.
-
-### half-closed (local)
-
-A stream that is in the "half-closed (local)" state MUST NOT be used for sending
-STREAM frames; WINDOW_UPDATE, RST_STREAM, and REQUEST_RST MAY be sent in this
-state.
-
-A stream transitions from this state to "closed" when a STREAM frame that
-contains an FIN flag or when a RST_STREAM frame is received.
-
-An endpoint can receive any type of frame in this state.  Providing flow-control
-credit using WINDOW_UPDATE frames is necessary to continue receiving
-flow-controlled frames.  In this state, a receiver MAY ignore WINDOW_UPDATE
-frames for this stream, which might arrive for a short period after a frame
-bearing the FIN flag is sent.
-
-If an endpoint is no longer interested in the data being received in this state,
-it MAY send a REQUEST_RST frame to request that the peer close the stream.
-STREAM frames received after sending REQUEST_RST are still counted toward the
-connection and stream flow-control windows.  Even though these frames might be
-ignored, because they are sent before their sender receives the REQUEST_RST, the
-sender will consider the frames to count against its flow-control windows.
-
-If a REQUEST_RST frame is received on a stream that is already in the
-"half-closed (local)" state, a RST_STREAM frame SHOULD still be sent,
-so that no STREAM frames previously sent will be retransmitted.
-
-### half-closed (remote)
-
-A stream that is "half-closed (remote)" is no longer being used by the peer to
-send any data.  In this state, a sender is no longer obligated to maintain a
-receiver stream-level flow-control window.
-
-Other frames on the stream might arrive after reaching this state, due to
-reordering or spurious retransmission.  If an endpoint receives any STREAM
-frames for a stream that is in this state, it MUST discard them.  If the STREAM
-frames are for an offset beyond the end of data transferred on the stream, it
-MUST close the connection with a QUIC_STREAM_DATA_AFTER_TERMINATION error
-({{error-handling}}).
-
-A stream in this state can be used by the endpoint to send frames of any type.
-In this state, the endpoint continues to observe advertised stream-level and
-connection-level flow-control limits ({{flow-control}}).
-
-A stream can transition from this state to "closed" by sending a STREAM frame
-that contains a FIN flag or by sending a RST_STREAM frame.  Upon receipt of a
-REQUEST_RST frame, a RST_STREAM frame SHOULD be sent in response.
+From this state, the sender send a STREAM frame with the FIN flag set or a
+RST_STREAM frame.  These indicate the clean or abrupt termination of data flow
+on the stream, respectively.  In either case, this causes the stream to
+transition into the "closed" state. The receiving endpoint MUST NOT process the
+FIN flag until all preceding data on the stream has been received, but MAY
+process a RST_STREAM frame immediately and discard any preceding data.
 
 ### closed
 
-The "closed" state is the terminal state.
+The "closed" state is the terminal state.  No further frames will be generated
+by either peer, though the receiving peer's frames can continue to arrive until
+it realizes that the stream has closed.  Such frames MUST be quietly discarded.
 
 A final offset is present in both a STREAM frame bearing a FIN flag and in a
-RST_STREAM frame.  Upon sending either of these frames for a stream, the
-endpoint MUST NOT send a STREAM frame carrying data beyond the final offset.
-
-An endpoint that receives any frame for this stream after receiving either a FIN
-flag and all stream data preceding it, or a RST_STREAM frame, MUST quietly
-discard the frame, with one exception.  If a STREAM frame carrying data beyond
-the received final offset is received, the endpoint MUST close the connection
-with a QUIC_STREAM_DATA_AFTER_TERMINATION error ({{error-handling}}).
-
-In the absence of more specific guidance elsewhere in this document,
-implementations SHOULD treat the receipt of a frame that is not expressly
-permitted in the description of a state as a connection error
-({{error-handling}}). Frames of unknown types are ignored.
-
-(TODO: QUIC_STREAM_NO_ERROR is a special case.  Write it up.)
+RST_STREAM frame.  If a STREAM frame carrying data beyond the received final
+offset is received, the receiving endpoint MUST close the connection with a
+QUIC_STREAM_DATA_AFTER_TERMINATION error ({{error-handling}}).
 
 ## Stream Identifiers {#stream-identifiers}
 
-Streams are identified by an unsigned 32-bit integer, referred to as the
-StreamID.  To avoid StreamID collision, clients MUST initiate streams usinge
-odd-numbered StreamIDs; streams initiated by the server MUST use even-numbered
-StreamIDs.
+Streams in each direction are identified by an unsigned 32-bit integer, referred
+to as the Stream ID. Streams with the same Stream ID in opposite directions
+might or might not be related to each other, depending on the application's
+requirements.
 
-A StreamID of zero (0x0) is reserved and used for connection-level flow control
-frames ({{flow-control}}); the StreamID of zero cannot be used to establish a
-new stream.
+Stream ID zero (0x0) is reserved and used for connection-level flow control
+frames ({{flow-control}}); Stream ID zero cannot be used to establish a new
+stream.
 
-StreamID 1 (0x1) is reserved for the crypto handshake.  StreamID 1 MUST NOT be
-used for application data, and MUST be the first client-initiated stream.
+Stream ID 1 (0x1) in each direction is reserved for the crypto handshake. Stream
+ID 1 MUST NOT be used for application data, and MUST be the first stream
+initiated by each peer.
 
-Streams MUST be created or reserved in sequential order, but MAY be used in
-arbitrary order.  A QUIC endpoint MUST NOT reuse a StreamID on a given
-connection.
+Streams SHOULD be allocated in sequential order, but MAY be used in arbitrary
+order.  A QUIC endpoint MUST NOT reuse a Stream ID on a given connection.
 
 ## Stream Concurrency
 
@@ -1625,24 +1539,20 @@ clients specify the maximum number of concurrent streams the server can
 initiate, and servers specify the maximum number of concurrent streams the
 client can initiate.
 
-Streams that are in the "open" state or in either of the "half-closed" states
-count toward the maximum number of streams that an endpoint is permitted to
-open.  Streams in any of these three states count toward the limit advertised in
-the MSPC setting.
+Streams that are in the "open" state count toward the maximum number of streams
+that an endpoint is permitted to open.  Endpoints MUST NOT exceed the limit set
+by their peer.  An endpoint that receives a STREAM frame that causes its
+advertised concurrent stream limit to be exceeded MUST treat this as a stream
+error of type QUIC_TOO_MANY_OPEN_STREAMS ({{error-handling}}).
 
-Endpoints MUST NOT exceed the limit set by their peer.  An endpoint that
-receives a STREAM frame that causes its advertised concurrent stream limit to be
-exceeded MUST treat this as a stream error of type QUIC_TOO_MANY_OPEN_STREAMS
-({{error-handling}}).
+## Sending Data
 
-## Sending and Receiving Data
-
-Once a stream is created, endpoints may use the stream to send and receive data.
-Each endpoint may send a series of STREAM frames encapsulating data on a stream
-until the stream is terminated in that direction.  Streams are an ordered
-byte-stream abstraction, and they have no other structure within them.  STREAM
-frame boundaries are not expected to be preserved in retransmissions from the
-sender or during delivery to the application at the receiver.
+Once a stream is created, the initiator can use the stream to send data. This is
+transmitted as a series of STREAM frames encapsulating data on a stream until
+the stream is terminated.  Streams are an ordered byte-stream abstraction, and
+they have no other structure within them.  STREAM frame boundaries are not
+expected to be preserved in retransmissions from the sender or during delivery
+to the application at the receiver.
 
 When new data is to be sent on a stream, a sender MUST set the encapsulating
 STREAM frame's offset field to the stream offset of the first byte of this new
@@ -1666,6 +1576,10 @@ controller and the flow controller, with the following two exceptions.
 Flow control is described in detail in {{flow-control}}, and congestion control
 is described in the companion document {{QUIC-RECOVERY}}.
 
+Streams carry data from sender to receiver.  If the receiver needs to respond
+to the transferred data, it opens a stream in the opposite direction.
+Application protocols which require this behavior MUST define how to identify
+which stream(s) will be used for responses.
 
 # Flow Control {#flow-control}
 
@@ -1703,12 +1617,12 @@ expected to be sent infrequently in common cases, but they are considered useful
 for debugging and monitoring purposes.
 
 A receiver advertises credit for a stream by sending a WINDOW_UPDATE frame with
-the StreamID set appropriately.  A receiver may simply use the current received
+the Stream ID set appropriately.  A receiver may simply use the current received
 offset to determine the flow control offset to be advertised.
 
 Connection flow control is a limit to the total bytes of stream data sent in
 STREAM frames.  A receiver advertises credit for a connection by sending a
-WINDOW_UPDATE frame with the StreamID set to zero (0x00).  A receiver may
+WINDOW_UPDATE frame with the Stream ID set to zero (0x00).  A receiver may
 maintain a cumulative sum of bytes received cumulatively on all streams to
 determine the value of the connection flow control offset to be advertised in
 WINDOW_UPDATE frames.  A sender may maintain a cumulative sum of stream data
@@ -1741,16 +1655,6 @@ RST_STREAM frame, a receiver definitively knows how many bytes were sent on that
 stream before the RST_STREAM frame, and the receiver MUST use the final offset
 to account for all bytes sent on the stream in its connection level flow
 controller.
-
-### Response to a RST_STREAM
-
-Since streams are bidirectional, a sender of a RST_STREAM needs to know how many
-bytes the peer has sent on the stream.   An endpoint that receives a RST_STREAM
-frame (and which has not sent a FIN or a RST_STREAM) MUST immediately respond
-with a RST_STREAM frame bearing the offset of the last byte sent on this stream
-as the final offset, and MUST NOT send any more data on the stream.  This
-RST_STREAM SHOULD contain the error code QUIC_RECEIVED_RST.
-
 
 ### Offset Increment
 
