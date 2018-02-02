@@ -1414,6 +1414,7 @@ his employment there.
 ## Since draft-ietf-quic-http-08
 
 - Clarified connection coalescing rules (#940, #1024)
+- Use QUIC-style MALFORMED_FRAME error code
 
 ## Since draft-ietf-quic-http-07
 
