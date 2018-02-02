@@ -3926,7 +3926,6 @@ Issue and pull request numbers are listed with a leading octothorp.
 - BLOCKED frame now includes reason for blocking (#452, #924, #927, #928)
 - GAP limitation in ACK Frame (#613)
 - Improved PMTUD description (#614, #1036)
-- Clarified stream state machine (#634, #662, #894)
 - Reserved versions don't need to be generated deterministically (#831, #931)
 - You don't always need the draining period (#871)
 - Stateless reset clarified as version-specific (#930, #986)
