@@ -292,7 +292,7 @@ unnecessarily limit parallelism.
 These streams carry frames related to the request/response (see
 {{request-response}}). When a stream terminates cleanly, if the last frame on
 the stream was truncated, this MUST be treated as a connection error (see
-HTTP_MALFORMED_FRAME in {{http-error-codes}}).  Streams which terminate abruptly
+HTTP_BAD_FRAME_SIZE in {{http-error-codes}}).  Streams which terminate abruptly
 may be reset at any point in the frame.
 
 HTTP/3 does not use server-initiated bidirectional streams; clients MUST omit or
@@ -464,7 +464,7 @@ Each frame's payload MUST contain exactly the fields identified in its
 description.  A frame payload that contains additional bytes after the
 identified fields or a frame payload that terminates before the end of the
 identified fields MUST be treated as a connection error of type
-HTTP_MALFORMED_FRAME.
+HTTP_BAD_FRAME_SIZE.
 
 ## Frame Definitions {#frames}
 
@@ -595,16 +595,16 @@ using a Stream ID of 0, as in QUIC stream 0 carries a valid HTTP request.  The
 root of the tree cannot be reprioritized.  A PRIORITY frame sent on a request
 stream with the Prioritized Element Type set to any value other than `11` or
 which expresses a dependency on a request with a greater Stream ID than the
-current stream MUST be treated as a stream error of type HTTP_MALFORMED_FRAME.
+current stream MUST be treated as a stream error of type HTTP_INVALID_PRIORITY.
 Likewise, a PRIORITY frame sent on a control stream with the Prioritized Element
 Type set to `11` MUST be treated as a connection error of type
-HTTP_MALFORMED_FRAME. A PRIORITY frame with Empty bits not set to zero MAY be
-treated as a connection error of type HTTP_MALFORMED_FRAME.
+HTTP_INVALID_PRIORITY. A PRIORITY frame with Empty bits not set to zero MAY be
+treated as a connection error of type HTTP_INVALID_PRIORITY.
 
 When a PRIORITY frame claims to reference a request, the associated ID MUST
 identify a client-initiated bidirectional stream.  A server MUST treat receipt
 of a PRIORITY frame identifying a stream of any other type as a connection error
-of type HTTP_MALFORMED_FRAME.
+of type HTTP_INVALID_PRIORITY.
 
 A PRIORITY frame that references a non-existent Push ID, a Placeholder ID
 greater than the server's limit, or a Stream ID the client is not yet permitted
@@ -686,7 +686,7 @@ while servers are more cautious about request size.
 
 Parameters MUST NOT occur more than once in the SETTINGS frame.  A receiver MAY
 treat the presence of the same parameter more than once as a connection error of
-type HTTP_MALFORMED_FRAME.
+type HTTP_DUPLICATE_SETTING.
 
 The payload of a SETTINGS frame consists of zero or more parameters.  Each
 parameter consists of a setting identifier and a value, both encoded as QUIC
@@ -784,10 +784,13 @@ Header Block:
   for more details.
 
 A server MUST NOT use a Push ID that is larger than the client has provided in a
-MAX_PUSH_ID frame ({{frame-max-push-id}}) and MUST NOT use the same Push ID in
-multiple PUSH_PROMISE frames.  A client MUST treat receipt of a PUSH_PROMISE
-that contains a larger Push ID than the client has advertised or a Push ID which
-has already been promised as a connection error of type HTTP_MALFORMED_FRAME.
+MAX_PUSH_ID frame ({{frame-max-push-id}}). A client MUST treat receipt of a
+PUSH_PROMISE frame that contains a larger Push ID than the client has advertised
+as a connection error of type HTTP_LIMIT_EXCEEDED.
+
+A server MUST NOT use the same Push ID in multiple PUSH_PROMISE frames. A client
+MUST treat receipt of a Push ID which has already been promised as a connection
+error of type HTTP_DUPLICATE_PUSH.
 
 If a PUSH_PROMISE frame is received on either control stream, the recipient MUST
 respond with a connection error ({{errors}}) of type HTTP_WRONG_STREAM.
@@ -859,7 +862,7 @@ The MAX_PUSH_ID frame carries a single variable-length integer that identifies
 the maximum value for a Push ID that the server can use (see
 {{frame-push-promise}}).  A MAX_PUSH_ID frame cannot reduce the maximum Push ID;
 receipt of a MAX_PUSH_ID that contains a smaller value than previously received
-MUST be treated as a connection error of type HTTP_MALFORMED_FRAME.
+MUST be treated as a connection error of type HTTP_PUSH_ID_REDUCED.
 
 ### DUPLICATE_PUSH {#frame-duplicate-push}
 
@@ -1443,7 +1446,8 @@ HTTP_LIMIT_EXCEEDED (0x0B):
   that identifier was referenced.
 
 HTTP_DUPLICATE_PUSH (0x0C):
-: A Push ID was referenced in two different stream headers.
+: An identical Push ID was referenced in two different PUSH_PROMISE frames or
+  two different push stream headers.
 
 HTTP_UNKNOWN_STREAM_TYPE (0x0D):
 : A unidirectional stream header contained an unknown stream type.
@@ -1472,16 +1476,22 @@ HTTP_UNEXPECTED_FRAME (0x0013):
 HTTP_REQUEST_REJECTED (0x0014):
 : A server rejected a request without performing any application processing.
 
+HTTP_DUPLICATE_SETTING (0x0015):
+: A SETTINGS frame with duplicate paraemeters was received.
+
+HTTP_BAD_FRAME_SIZE (0x0016):
+: A frame with an invalid size was received.
+
+HTTP_INVALID_PRIORITY (0x0017):
+: An invalid prioritistation instruction was received by the server.
+
+HTTP_PUSH_ID_REDUCED (0x0018):
+: The server received a MAX_PUSH_ID frame with a smaller value than previously
+  received.
+
 HTTP_GENERAL_PROTOCOL_ERROR (0x00FF):
 : Peer violated protocol requirements in a way which doesn't match a more
-  specific error code, or endpoint declines to use the more specific error code.
-
-HTTP_MALFORMED_FRAME (0x01XX):
-: An error in a specific frame type.  If the frame type is `0xfe` or less, the
-  type is included as the last byte of the error code.  For example, an error in
-  a MAX_PUSH_ID frame would be indicated with the code (0x10D).  The last byte
-  `0xff` is used to indicate any frame type greater than `0xfe`.
-
+  specific error code, or endpoint declines to use a more specific error code.
 
 # Security Considerations
 
@@ -1683,7 +1693,7 @@ The entries in the following table are registered by this document.
 | HTTP_VERSION_FALLBACK               | 0x0009     | Retry over HTTP/1.1                      | {{http-error-codes}}   |
 | HTTP_WRONG_STREAM                   | 0x000A     | A frame was sent on the wrong stream     | {{http-error-codes}}   |
 | HTTP_LIMIT_EXCEEDED                 | 0x000B     | An identifier limit was exceeded         | {{http-error-codes}}   |
-| HTTP_DUPLICATE_PUSH                 | 0x000C     | Push ID was fulfilled multiple times     | {{http-error-codes}}   |
+| HTTP_DUPLICATE_PUSH                 | 0x000C     | Push ID was used multiple times          | {{http-error-codes}}   |
 | HTTP_UNKNOWN_STREAM_TYPE            | 0x000D     | Unknown unidirectional stream type       | {{http-error-codes}}   |
 | HTTP_WRONG_STREAM_COUNT             | 0x000E     | Too many unidirectional streams          | {{http-error-codes}}   |
 | HTTP_CLOSED_CRITICAL_STREAM         | 0x000F     | Critical stream was closed               | {{http-error-codes}}   |
@@ -1692,7 +1702,11 @@ The entries in the following table are registered by this document.
 | HTTP_MISSING_SETTINGS               | 0x0012     | No SETTINGS frame received               | {{http-error-codes}}   |
 | HTTP_UNEXPECTED_FRAME               | 0x0013     | Frame not permitted in the current state | {{http-error-codes}}   |
 | HTTP_REQUEST_REJECTED               | 0x0014     | Request not processed                    | {{http-error-codes}}   |
-| HTTP_MALFORMED_FRAME                | 0x01XX     | Error in frame formatting                | {{http-error-codes}}   |
+| HTTP_DUPLICATE_SETTING              | 0x0015     | SETTINGS frame with duplicate parameter  | {{http-error-codes}}   |
+| HTTP_BAD_FRAME_SIZE                 | 0x0016     | Frame size incorrect                     | {{http-error-codes}}   |
+| HTTP_INVALID_PRIORITY               | 0x0017     | Server received invalid prioritization   | {{http-error-codes}}   |
+| HTTP_PUSH_ID_REDUCED                | 0x0018     | Maximum push ID reduced                  | {{http-error-codes}}   |
+| HTTP_GENERAL_PROTOCOL_ERROR         | 0x00FF     | General purpose error                    | {{http-error-codes}}   |
 | ----------------------------------- | ---------- | ---------------------------------------- | ---------------------- |
 
 ## Stream Types {#iana-stream-types}
@@ -1926,7 +1940,7 @@ NO_ERROR (0x0):
 : HTTP_NO_ERROR in {{http-error-codes}}.
 
 PROTOCOL_ERROR (0x1):
-: No single mapping.  See new HTTP_MALFORMED_FRAME error codes defined in
+: No single mapping.  See new error codes defined in
   {{http-error-codes}}.
 
 INTERNAL_ERROR (0x2):
@@ -1944,7 +1958,7 @@ STREAM_CLOSED (0x5):
   QUIC_STREAM_DATA_AFTER_TERMINATION from the QUIC layer.
 
 FRAME_SIZE_ERROR (0x6):
-: HTTP_MALFORMED_FRAME error codes defined in {{http-error-codes}}.
+: HTTP_BAD_FRAME_SIZE error code defined in {{http-error-codes}}.
 
 REFUSED_STREAM (0x7):
 : HTTP_REQUEST_REJECTED (in {{http-error-codes}}) is used to indicate that a
